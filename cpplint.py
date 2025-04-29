@@ -1104,6 +1104,7 @@ def ParseNolintSuppressions(filename, raw_line, linenum, error):
       linenum: int, the number of the current line.
       error: function, an error handler.
     """
+    if _IsFiltered('readability/nolint'): return
     if matched := re.search(r"\bNOLINT(NEXTLINE|BEGIN|END)?\b(\([^)]+\))?", raw_line):
         no_lint_type = matched.group(1)
         if no_lint_type == "NEXTLINE":
@@ -1665,6 +1666,7 @@ class _FunctionState:
           filename: The name of the current file.
           linenum: The number of the line to check.
         """
+        if _IsFiltered('readability/fn_size'): return
         if not self.in_a_function:
             return
 
@@ -1821,25 +1823,31 @@ def _ShouldPrintError(category, confidence, filename, linenum):
     if confidence < _cpplint_state.verbose_level:
         return False
 
+    if _IsFiltered(category): return False
+
+    return True
+
+def CacheFilters():
+    _cpplint_state.namesWithIsFilters = {}
+    for category in _ERROR_CATEGORIES:
+      _cpplint_state.namesWithIsFilters[category] = _IsFilteredSlow(category)
+
+def _IsFiltered(category):
+    return _cpplint_state.namesWithIsFilters[category]
+
+def _IsFilteredSlow(category):
     is_filtered = False
     for one_filter in _Filters():
-        filter_cat, filter_file, filter_line = _ParseFilterSelector(one_filter[1:])
-        category_match = category.startswith(filter_cat)
-        file_match = filter_file in ("", filename)
-        line_match = filter_line in (linenum, -1)
-
-        if one_filter.startswith("-"):
-            if category_match and file_match and line_match:
-                is_filtered = True
-        elif one_filter.startswith("+"):
-            if category_match and file_match and line_match:
-                is_filtered = False
-        else:
-            # should have been checked for in SetFilter.
-            msg = f"Invalid filter: {one_filter}"
-            raise ValueError(msg)
-    return not is_filtered
-
+      if one_filter.startswith('-'):
+        if category.startswith(one_filter[1:]):
+          is_filtered = True
+      elif one_filter.startswith('+'):
+        if category.startswith(one_filter[1:]):
+          is_filtered = False
+      else:
+        assert False  # should have been checked for in SetFilter.
+    
+    return is_filtered
 
 def Error(filename, linenum, category, confidence, message):
     """Logs the fact we've found a lint error.
@@ -1870,7 +1878,7 @@ def Error(filename, linenum, category, confidence, message):
                 f"{filename}({linenum}): error cpplint: [{category}] {message} [{confidence}]\n"
             )
         elif _cpplint_state.output_format == "eclipse":
-            sys.stderr.write(
+            sys.stdout.write(
                 f"{filename}:{linenum}: warning: {message}  [{category}] [{confidence}]\n"
             )
         elif _cpplint_state.output_format == "junit":
@@ -1883,12 +1891,12 @@ def Error(filename, linenum, category, confidence, message):
                     f" # {message}  [{category}] [{confidence}]\n"
                 )
             else:
-                sys.stderr.write(
+                sys.stdout.write(
                     f'# {filename}:{linenum}:  "{message}"  [{category}] [{confidence}]\n'
                 )
         else:
             final_message = f"{filename}:{linenum}:  {message}  [{category}] [{confidence}]\n"
-            sys.stderr.write(final_message)
+            sys.stdout.write(final_message)
 
 
 # Matches standard C++ escape sequences per 2.13.2.3 of the C++ standard.
@@ -2435,6 +2443,7 @@ def ReverseCloseExpression(clean_lines, linenum, pos):
 def CheckForCopyright(filename, lines, error):
     """Logs an error if no Copyright message appears at the top of the file."""
 
+    if _IsFiltered('legal/copyright'): return
     # We'll say it should occur by line 10. Don't forget there's a
     # placeholder line at the front.
     for line in range(1, min(len(lines), 11)):
@@ -2590,6 +2599,7 @@ def CheckForHeaderGuard(filename, clean_lines, error, cppvar):
     # Because this is silencing a warning for a nonexistent line, we
     # only support the very specific NOLINT(build/header_guard) syntax,
     # and not the general NOLINT or NOLINT(*) syntax.
+    if _IsFiltered('build/header_guard'): return
     raw_lines = clean_lines.lines_without_raw_strings
     for i in raw_lines:
         if re.search(r"//\s*NOLINT\(build/header_guard\)", i):
@@ -2698,6 +2708,7 @@ def CheckForHeaderGuard(filename, clean_lines, error, cppvar):
 def CheckHeaderFileIncluded(filename, include_state, error):
     """Logs an error if a source file does not include its header."""
 
+    if _IsFiltered('build/include'): return
     # Do not check test files
     fileinfo = FileInfo(filename)
     if re.search(_TEST_FILE_SUFFIX, fileinfo.BaseName()):
@@ -2746,6 +2757,7 @@ def CheckForBadCharacters(filename, lines, error):
       lines: An array of strings, each representing a line of the file.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/utf8') and _IsFiltered('readability/nul'): return
     for linenum, line in enumerate(lines):
         if "\ufffd" in line:
             error(
@@ -2772,6 +2784,7 @@ def CheckForNewlineAtEOF(filename, lines, error):
     # original file (go figure), then splitting on \n.
     # To verify that the file ends in \n, we just have to make sure the
     # last-but-two element of lines() exists and is empty.
+    if _IsFiltered('whitespace/ending_newline'): return
     if len(lines) < 3 or lines[-2]:
         error(
             filename,
@@ -2799,6 +2812,7 @@ def CheckForMultilineCommentsAndStrings(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/multiline_comment') and _IsFiltered('readability/multiline_string'): return
     line = clean_lines.elided[linenum]
 
     # Remove all \\ (escaped backslashes) from the line. They are OK, and the
@@ -2874,6 +2888,7 @@ def CheckPosixThreading(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/threadsafe_fn'): return
     line = clean_lines.elided[linenum]
     for single_thread_func, multithread_safe_func, pattern in _THREADING_LIST:
         # Additional pattern matching check to confirm that this is the
@@ -2904,6 +2919,7 @@ def CheckVlogArguments(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/vlog'): return
     line = clean_lines.elided[linenum]
     if re.search(r"\bVLOG\((INFO|ERROR|WARNING|DFATAL|FATAL)\)", line):
         error(
@@ -2937,6 +2953,7 @@ def CheckInvalidIncrement(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/invalid_increment'): return 
     line = clean_lines.elided[linenum]
     if _RE_PATTERN_INVALID_INCREMENT.match(line):
         error(
@@ -3057,31 +3074,33 @@ class _ClassInfo(_BlockInfo):
     def CheckEnd(self, filename, clean_lines, linenum, error):
         # If there is a DISALLOW macro, it should appear near the end of
         # the class.
-        seen_last_thing_in_class = False
-        for i in range(linenum - 1, self.starting_linenum, -1):
-            match = re.search(
-                r"\b(DISALLOW_COPY_AND_ASSIGN|DISALLOW_IMPLICIT_CONSTRUCTORS)\("
-                + self.name
-                + r"\)",
-                clean_lines.elided[i],
-            )
-            if match:
-                if seen_last_thing_in_class:
-                    error(
-                        filename,
-                        i,
-                        "readability/constructors",
-                        3,
-                        match.group(1) + " should be the last thing in the class",
-                    )
-                break
-
-            if not re.match(r"^\s*$", clean_lines.elided[i]):
-                seen_last_thing_in_class = True
+        if not _IsFiltered('readability/constructors'):
+            seen_last_thing_in_class = False
+            for i in range(linenum - 1, self.starting_linenum, -1):
+                match = re.search(
+                    r"\b(DISALLOW_COPY_AND_ASSIGN|DISALLOW_IMPLICIT_CONSTRUCTORS)\("
+                    + self.name
+                    + r"\)",
+                    clean_lines.elided[i],
+                )
+                if match:
+                    if seen_last_thing_in_class:
+                        error(
+                            filename,
+                            i,
+                            "readability/constructors",
+                            3,
+                            match.group(1) + " should be the last thing in the class",
+                        )
+                    break
+            
+                if not re.match(r"^\s*$", clean_lines.elided[i]):
+                    seen_last_thing_in_class = True
 
         # Check that closing brace is aligned with beginning of the class.
         # Only do this if the closing brace is indented by only whitespaces.
         # This means we will not check single-line class definitions.
+        if _IsFiltered('whitespace/indent'): return
         indent = re.match(r"^( *)\}", clean_lines.elided[linenum])
         if indent and len(indent.group(1)) != self.class_indent:
             if self.is_struct:
@@ -3115,6 +3134,7 @@ class _NamespaceInfo(_BlockInfo):
 
     def CheckEnd(self, filename, clean_lines, linenum, error):
         """Check end of namespace comments."""
+        if _IsFiltered('readability/namespace'): return
         line = clean_lines.raw_lines[linenum]
 
         # Check how many lines is enclosed in this namespace.  Don't issue
@@ -3680,7 +3700,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
     # Remove comments from the line, but leave in strings for now.
     line = clean_lines.lines[linenum]
 
-    if re.search(r'printf\s*\(.*".*%[-+ ]?\d*q', line):
+    if not _IsFiltered('runtime/printf_format') and re.search(r'printf\s*\(.*".*%[-+ ]?\d*q', line):
         error(
             filename,
             linenum,
@@ -3689,7 +3709,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
             "%q in format strings is deprecated.  Use %ll instead.",
         )
 
-    if re.search(r'printf\s*\(.*".*%\d+\$', line):
+    if not _IsFiltered('runtime/printf_format') and re.search(r'printf\s*\(.*".*%\d+\$', line):
         error(
             filename,
             linenum,
@@ -3701,7 +3721,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
     # Remove escaped backslashes before looking for undefined escapes.
     line = line.replace("\\\\", "")
 
-    if re.search(r'("|\').*\\(%|\[|\(|{)', line):
+    if not _IsFiltered('build/printf_format') and re.search(r'("|\').*\\(%|\[|\(|{)', line):
         error(
             filename,
             linenum,
@@ -3713,7 +3733,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
     # For the rest, work with both comments and strings removed.
     line = clean_lines.elided[linenum]
 
-    if re.search(
+    if not _IsFiltered('build/storage_class') and re.search(
         r"\b(const|volatile|void|char|short|int|long"
         r"|float|double|signed|unsigned"
         r"|schar|u?int8_t|u?int16_t|u?int32_t|u?int64_t)"
@@ -3729,7 +3749,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
             "at the beginning of the declaration.",
         )
 
-    if re.match(r"\s*#\s*endif\s*[^/\s]+", line):
+    if not _IsFiltered('build/endif_comment') and re.match(r"\s*#\s*endif\s*[^/\s]+", line):
         error(
             filename,
             linenum,
@@ -3738,7 +3758,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
             "Uncommented text after #endif is non-standard.  Use a comment.",
         )
 
-    if re.match(r"\s*class\s+(\w+\s*::\s*)+\w+\s*;", line):
+    if not _IsFiltered('build/forward_decl') and re.match(r"\s*class\s+(\w+\s*::\s*)+\w+\s*;", line):
         error(
             filename,
             linenum,
@@ -3747,7 +3767,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
             "Inner-style forward declarations are invalid.  Remove this line.",
         )
 
-    if re.search(r"(\w+|[+-]?\d+(\.\d*)?)\s*(<|>)\?=?\s*(\w+|[+-]?\d+)(\.\d*)?", line):
+    if not _IsFiltered('build/deprecated') and re.search(r"(\w+|[+-]?\d+(\.\d*)?)\s*(<|>)\?=?\s*(\w+|[+-]?\d+)(\.\d*)?", line):
         error(
             filename,
             linenum,
@@ -3756,7 +3776,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
             ">? and <? (max and min) operators are non-standard and deprecated.",
         )
 
-    if re.search(r"^\s*const\s*string\s*&\s*\w+\s*;", line):
+    if not _IsFiltered('runtime/member_string_references') and re.search(r"^\s*const\s*string\s*&\s*\w+\s*;", line):
         # TODO(google): Could it be expanded safely to arbitrary references,
         # without triggering too many false positives? The first
         # attempt triggered 5 warnings for mostly benign code in the regtest, hence
@@ -3776,6 +3796,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum, nesting_state,
     # Everything else in this function operates on class declarations.
     # Return early if the top of the nesting stack is not a class, or if
     # the class head is not completed yet.
+    if _IsFiltered('runtime/explicit'): return
     classinfo = nesting_state.InnermostClass()
     if not classinfo or not classinfo.seen_open_brace:
         return
@@ -3884,6 +3905,7 @@ def CheckSpacingForFunctionCall(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('whitespace/parens'): return
     line = clean_lines.elided[linenum]
 
     # Since function calls often occur inside if/for/while/switch
@@ -4019,6 +4041,7 @@ def CheckForFunctionLengths(filename, clean_lines, linenum, function_state, erro
       function_state: Current function name and lines in body so far.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/fn_size'): return
     lines = clean_lines.lines
     line = lines[linenum]
     joined_line = ""
@@ -4080,6 +4103,7 @@ def CheckComment(line, filename, linenum, next_line_start, error):
       next_line_start: The first non-whitespace column of the next line.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('whitespace/comments') and _IsFiltered('whitespace/todo') and _IsFiltered('readability/todo'): return
     commentpos = line.find("//")
     if commentpos != -1:
         # Check if the // may be in quotes.  If so, ignore it
@@ -4181,7 +4205,7 @@ def CheckSpacing(filename, clean_lines, linenum, nesting_state, error):
     #
     # Also skip blank line checks for 'extern "C"' blocks, which are formatted
     # like namespaces.
-    if IsBlankLine(line) and not nesting_state.InNamespaceBody() and not nesting_state.InExternC():
+    if not _IsFiltered('whitespace/blank_line') and IsBlankLine(line) and not nesting_state.InNamespaceBody() and not nesting_state.InExternC():
         elided = clean_lines.elided
         prev_line = elided[linenum - 1]
         prevbrace = prev_line.rfind("{")
@@ -4265,12 +4289,12 @@ def CheckSpacing(filename, clean_lines, linenum, nesting_state, error):
 
     # You shouldn't have spaces before your brackets, except for C++11 attributes
     # or maybe after 'delete []', 'return []() {};', or 'auto [abc, ...] = ...;'.
-    if re.search(r"\w\s+\[(?!\[)", line) and not re.search(r"(?:auto&?|delete|return)\s+\[", line):
+    if not _IsFiltered('whitespace/braces') and re.search(r"\w\s+\[(?!\[)", line) and not re.search(r"(?:auto&?|delete|return)\s+\[", line):
         error(filename, linenum, "whitespace/braces", 5, "Extra space before [")
 
     # In range-based for, we wanted spaces before and after the colon, but
     # not around "::" tokens that might appear.
-    if re.search(r"for *\(.*[^:]:[^: ]", line) or re.search(r"for *\(.*[^: ]:[^:]", line):
+    if not _IsFiltered('whitespace/forcolon') and re.search(r"for *\(.*[^:]:[^: ]", line) or re.search(r"for *\(.*[^: ]:[^:]", line):
         error(
             filename,
             linenum,
@@ -4289,6 +4313,7 @@ def CheckOperatorSpacing(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('whitespace/operators'): return
     line = clean_lines.elided[linenum]
 
     # Don't try to do spacing checks for operator methods.  Do this by
@@ -4408,6 +4433,7 @@ def CheckParenthesisSpacing(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('whitespace/parens'): return
     line = clean_lines.elided[linenum]
 
     # No spaces after an if, while, switch, or for
@@ -4473,17 +4499,18 @@ def CheckCommaSpacing(filename, clean_lines, linenum, error):
     # verify that lines contain missing whitespaces, second pass on raw
     # lines to confirm that those missing whitespaces are not due to
     # elided comments.
-    match = re.search(
-        r",[^,\s]", re.sub(r"\b__VA_OPT__\s*\(,\)", "", re.sub(r"\boperator\s*,\s*\(", "F(", line))
-    )
-    if match and re.search(r",[^,\s]", raw[linenum]):
-        error(filename, linenum, "whitespace/comma", 3, "Missing space after ,")
+    if not _IsFiltered('whitespace/comma'):
+        match = re.search(
+            r",[^,\s]", re.sub(r"\b__VA_OPT__\s*\(,\)", "", re.sub(r"\boperator\s*,\s*\(", "F(", line))
+        )
+        if match and re.search(r",[^,\s]", raw[linenum]):
+            error(filename, linenum, "whitespace/comma", 3, "Missing space after ,")
 
     # You should always have a space after a semicolon
     # except for few corner cases
     # TODO(google): clarify if 'if (1) { return 1;}' is requires one more
     # space after ;
-    if re.search(r";[^\s};\\)/]", line):
+    if not _IsFiltered('whitespace/semicolon') and re.search(r";[^\s};\\)/]", line):
         error(filename, linenum, "whitespace/semicolon", 3, "Missing space after ;")
 
 
@@ -4568,82 +4595,84 @@ def CheckBracesSpacing(filename, clean_lines, linenum, nesting_state, error):
     # this is an easy test.  Except that braces used for initialization don't
     # follow the same rule; we often don't want spaces before those.
 
-    if match := re.match(r"^(.*[^ ({>]){", line):
-        # Try a bit harder to check for brace initialization.  This
-        # happens in one of the following forms:
-        #   Constructor() : initializer_list_{} { ... }
-        #   Constructor{}.MemberFunction()
-        #   Type variable{};
-        #   FunctionCall(type{}, ...);
-        #   LastArgument(..., type{});
-        #   LOG(INFO) << type{} << " ...";
-        #   map_of_type[{...}] = ...;
-        #   ternary = expr ? new type{} : nullptr;
-        #   OuterTemplate<InnerTemplateConstructor<Type>{}>
-        #
-        # We check for the character following the closing brace, and
-        # silence the warning if it's one of those listed above, i.e.
-        # "{.;,)<>]:".
-        #
-        # To account for nested initializer list, we allow any number of
-        # closing braces up to "{;,)<".  We can't simply silence the
-        # warning on first sight of closing brace, because that would
-        # cause false negatives for things that are not initializer lists.
-        #   Silence this:         But not this:
-        #     Outer{                if (...) {
-        #       Inner{...}            if (...){  // Missing space before {
-        #     };                    }
-        #
-        # There is a false negative with this approach if people inserted
-        # spurious semicolons, e.g. "if (cond){};", but we will catch the
-        # spurious semicolon with a separate check.
-        leading_text = match.group(1)
-        (endline, endlinenum, endpos) = CloseExpression(clean_lines, linenum, len(match.group(1)))
-        trailing_text = ""
-        if endpos > -1:
-            trailing_text = endline[endpos:]
-        for offset in range(endlinenum + 1, min(endlinenum + 3, clean_lines.NumLines() - 1)):
-            trailing_text += clean_lines.elided[offset]
-        # We also suppress warnings for `uint64_t{expression}` etc., as the style
-        # guide recommends brace initialization for integral types to avoid
-        # overflow/truncation.
-        if not re.match(r"^[\s}]*[{.;,)<>\]:]", trailing_text) and not _IsType(
-            clean_lines, nesting_state, leading_text
-        ):
-            error(filename, linenum, "whitespace/braces", 5, "Missing space before {")
+    if not _IsFiltered('whitespace/braces'):
+        if match := re.match(r"^(.*[^ ({>]){", line):
+            # Try a bit harder to check for brace initialization.  This
+            # happens in one of the following forms:
+            #   Constructor() : initializer_list_{} { ... }
+            #   Constructor{}.MemberFunction()
+            #   Type variable{};
+            #   FunctionCall(type{}, ...);
+            #   LastArgument(..., type{});
+            #   LOG(INFO) << type{} << " ...";
+            #   map_of_type[{...}] = ...;
+            #   ternary = expr ? new type{} : nullptr;
+            #   OuterTemplate<InnerTemplateConstructor<Type>{}>
+            #
+            # We check for the character following the closing brace, and
+            # silence the warning if it's one of those listed above, i.e.
+            # "{.;,)<>]:".
+            #
+            # To account for nested initializer list, we allow any number of
+            # closing braces up to "{;,)<".  We can't simply silence the
+            # warning on first sight of closing brace, because that would
+            # cause false negatives for things that are not initializer lists.
+            #   Silence this:         But not this:
+            #     Outer{                if (...) {
+            #       Inner{...}            if (...){  // Missing space before {
+            #     };                    }
+            #
+            # There is a false negative with this approach if people inserted
+            # spurious semicolons, e.g. "if (cond){};", but we will catch the
+            # spurious semicolon with a separate check.
+            leading_text = match.group(1)
+            (endline, endlinenum, endpos) = CloseExpression(clean_lines, linenum, len(match.group(1)))
+            trailing_text = ""
+            if endpos > -1:
+                trailing_text = endline[endpos:]
+            for offset in range(endlinenum + 1, min(endlinenum + 3, clean_lines.NumLines() - 1)):
+                trailing_text += clean_lines.elided[offset]
+            # We also suppress warnings for `uint64_t{expression}` etc., as the style
+            # guide recommends brace initialization for integral types to avoid
+            # overflow/truncation.
+            if not re.match(r"^[\s}]*[{.;,)<>\]:]", trailing_text) and not _IsType(
+                clean_lines, nesting_state, leading_text
+            ):
+                error(filename, linenum, "whitespace/braces", 5, "Missing space before {")
 
     # Make sure '} else {' has spaces.
-    if re.search(r"}else", line):
+    if not _IsFiltered('whitespace/braces') and re.search(r"}else", line):
         error(filename, linenum, "whitespace/braces", 5, "Missing space before else")
 
     # You shouldn't have a space before a semicolon at the end of the line.
     # There's a special case for "for" since the style guide allows space before
     # the semicolon there.
-    if re.search(r":\s*;\s*$", line):
-        error(
-            filename,
-            linenum,
-            "whitespace/semicolon",
-            5,
-            "Semicolon defining empty statement. Use {} instead.",
-        )
-    elif re.search(r"^\s*;\s*$", line):
-        error(
-            filename,
-            linenum,
-            "whitespace/semicolon",
-            5,
-            "Line contains only semicolon. If this should be an empty statement, use {} instead.",
-        )
-    elif re.search(r"\s+;\s*$", line) and not re.search(r"\bfor\b", line):
-        error(
-            filename,
-            linenum,
-            "whitespace/semicolon",
-            5,
-            "Extra space before last semicolon. If this should be an empty "
-            "statement, use {} instead.",
-        )
+    if not _IsFiltered('whitespace/semicolon'):
+        if re.search(r":\s*;\s*$", line):
+            error(
+                filename,
+                linenum,
+                "whitespace/semicolon",
+                5,
+                "Semicolon defining empty statement. Use {} instead.",
+            )
+        elif re.search(r"^\s*;\s*$", line):
+            error(
+                filename,
+                linenum,
+                "whitespace/semicolon",
+                5,
+                "Line contains only semicolon. If this should be an empty statement, use {} instead.",
+            )
+        elif re.search(r"\s+;\s*$", line) and not re.search(r"\bfor\b", line):
+            error(
+                filename,
+                linenum,
+                "whitespace/semicolon",
+                5,
+                "Extra space before last semicolon. If this should be an empty "
+                "statement, use {} instead.",
+            )
 
 
 def IsDecltype(clean_lines, linenum, column):
@@ -4674,6 +4703,7 @@ def CheckSectionSpacing(filename, clean_lines, class_info, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('whitespace/blank_line'): return
     # Skip checks if the class is small, where small means 25 lines or less.
     # 25 lines seems like a good cutoff since that's the usual height of
     # terminals, and any class that can't fit in one screen can't really
@@ -4761,7 +4791,7 @@ def CheckBraces(filename, clean_lines, linenum, error):
 
     line = clean_lines.elided[linenum]  # get rid of comments and strings
 
-    if re.match(r"\s*{\s*$", line):
+    if not _IsFiltered('whitespace/braces') and re.match(r"\s*{\s*$", line):
         # We allow an open brace to start a line in the case where someone is using
         # braces in a block to explicitly create a new scope, which is commonly used
         # to control the lifetime of stack-allocated variables.  Braces are also
@@ -4788,7 +4818,7 @@ def CheckBraces(filename, clean_lines, linenum, error):
     # An else clause should be on the same line as the preceding closing brace.
     if last_wrong := re.match(r"\s*else\b\s*(?:if\b|\{|$)", line):
         prevline = GetPreviousNonBlankLine(clean_lines, linenum)[0]
-        if re.match(r"\s*}\s*$", prevline):
+        if not _IsFiltered('whitespace/newline') and re.match(r"\s*}\s*$", prevline):
             error(
                 filename,
                 linenum,
@@ -4801,58 +4831,60 @@ def CheckBraces(filename, clean_lines, linenum, error):
 
     # If braces come on one side of an else, they should be on both.
     # However, we have to worry about "else if" that spans multiple lines!
-    if re.search(r"else if\s*\(", line):  # could be multi-line if
-        brace_on_left = bool(re.search(r"}\s*else if\s*\(", line))
-        # find the ( after the if
-        pos = line.find("else if")
-        pos = line.find("(", pos)
-        if pos > 0:
-            (endline, _, endpos) = CloseExpression(clean_lines, linenum, pos)
-            brace_on_right = endline[endpos:].find("{") != -1
-            if brace_on_left != brace_on_right:  # must be brace after if
-                error(
-                    filename,
-                    linenum,
-                    "readability/braces",
-                    5,
-                    "If an else has a brace on one side, it should have it on both",
-                )
-    # Prevent detection if statement has { and we detected an improper newline after }
-    elif re.search(r"}\s*else[^{]*$", line) or (
-        re.match(r"[^}]*else\s*{", line) and not last_wrong
-    ):
-        error(
-            filename,
-            linenum,
-            "readability/braces",
-            5,
-            "If an else has a brace on one side, it should have it on both",
-        )
+    if not _IsFiltered('readability/braces'):
+        if re.search(r"else if\s*\(", line):  # could be multi-line if
+            brace_on_left = bool(re.search(r"}\s*else if\s*\(", line))
+            # find the ( after the if
+            pos = line.find("else if")
+            pos = line.find("(", pos)
+            if pos > 0:
+                (endline, _, endpos) = CloseExpression(clean_lines, linenum, pos)
+                brace_on_right = endline[endpos:].find("{") != -1
+                if brace_on_left != brace_on_right:  # must be brace after if
+                    error(
+                        filename,
+                        linenum,
+                        "readability/braces",
+                        5,
+                        "If an else has a brace on one side, it should have it on both",
+                    )
+        # Prevent detection if statement has { and we detected an improper newline after }
+        elif re.search(r"}\s*else[^{]*$", line) or (
+            re.match(r"[^}]*else\s*{", line) and not last_wrong
+        ):
+            error(
+                filename,
+                linenum,
+                "readability/braces",
+                5,
+                "If an else has a brace on one side, it should have it on both",
+            )
 
     # No control clauses with braces should have its contents on the same line
     # Exclude } which will be covered by empty-block detect
     # Exclude ; which may be used by while in a do-while
-    if (
-        keyword := re.search(
-            r"\b(else if|if|while|for|switch)"  # These have parens
-            r"\s*\(.*\)\s*(?:\[\[(?:un)?likely\]\]\s*)?{\s*[^\s\\};]",
-            line,
-        )
-    ) or (
-        keyword := re.search(
-            r"\b(else|do|try)"  # These don't have parens
-            r"\s*(?:\[\[(?:un)?likely\]\]\s*)?{\s*[^\s\\}]",
-            line,
-        )
-    ):
-        error(
-            filename,
-            linenum,
-            "whitespace/newline",
-            5,
-            f"Controlled statements inside brackets of {keyword.group(1)} clause"
-            " should be on a separate line",
-        )
+    if not _IsFiltered('whitespace/newline'):
+        if (
+            keyword := re.search(
+                r"\b(else if|if|while|for|switch)"  # These have parens
+                r"\s*\(.*\)\s*(?:\[\[(?:un)?likely\]\]\s*)?{\s*[^\s\\};]",
+                line,
+            )
+        ) or (
+            keyword := re.search(
+                r"\b(else|do|try)"  # These don't have parens
+                r"\s*(?:\[\[(?:un)?likely\]\]\s*)?{\s*[^\s\\}]",
+                line,
+            )
+        ):
+            error(
+                filename,
+                linenum,
+                "whitespace/newline",
+                5,
+                f"Controlled statements inside brackets of {keyword.group(1)} clause"
+                " should be on a separate line",
+            )
 
     # TODO(aaronliu0130): Err on if...else and do...while statements without braces;
     # style guide has changed since the below comment was written
@@ -4864,6 +4896,7 @@ def CheckBraces(filename, clean_lines, linenum, error):
     # its line, and the line after that should have an indent level equal to or
     # lower than the if. We also check for ambiguous if/else nesting without
     # braces.
+    if _IsFiltered('readability/braces'): return
     if_else_match = re.search(r"\b(if\s*(|constexpr)\s*\(|else\b)", line)
     if if_else_match and not re.match(r"\s*#", line):
         if_indent = GetIndentLevel(line)
@@ -4938,7 +4971,7 @@ def CheckTrailingSemicolon(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
-
+    if _IsFiltered('readability/braces'): return
     line = clean_lines.elided[linenum]
 
     # Block bodies should not be followed by a semicolon.  Due to C++11
@@ -5103,6 +5136,7 @@ def CheckEmptyBlockBody(filename, clean_lines, linenum, error):
     #
     # We also check "if" blocks here, since an empty conditional block
     # is likely an error.
+    if _IsFiltered('whitespace/empty_conditional_body') and _IsFiltered('whitespace/empty_loop_body') and _IsFiltered('whitespace/empty_if_body'): return
     line = clean_lines.elided[linenum]
     if matched := re.match(r"\s*(for|while|if)\s*\(", line):
         # Find the end of the conditional expression.
@@ -5238,7 +5272,8 @@ def CheckCheck(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
-
+    
+    if _IsFiltered('readability/check'): return
     # Decide the set of replacement macros that should be suggested
     lines = clean_lines.elided
     (check_macro, start_pos) = FindCheckMacro(lines[linenum])
@@ -5362,6 +5397,7 @@ def CheckAltTokens(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/alt_tokens'): return
     line = clean_lines.elided[linenum]
 
     # Avoid preprocessor lines
@@ -5445,7 +5481,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state, er
     line = raw_lines[linenum]
     prev = raw_lines[linenum - 1] if linenum > 0 else ""
 
-    if line.find("\t") != -1:
+    if not _IsFiltered('whitespace/tab') and line.find("\t") != -1:
         error(filename, linenum, "whitespace/tab", 1, "Tab found; better to use spaces")
 
     # One or three blank spaces at the beginning of the line is weird; it's
@@ -5471,7 +5507,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state, er
     # We also don't check for lines that look like continuation lines
     # (of lines ending in double quotes, commas, equals, or angle brackets)
     # because the rules for how to indent those are non-trivial.
-    if (
+    if (not _IsFiltered('whitespace/indent') and 
         not re.search(r'[",=><] *$', prev)
         and (initial_spaces in {1, 3})
         and not re.match(scope_or_label_pattern, cleansed_line)
@@ -5485,7 +5521,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state, er
             "Weird number of spaces at line-start.  Are you using a 2-space indent?",
         )
 
-    if line and line[-1].isspace():
+    if line and not _IsFiltered('whitespace/end_of_line') and line[-1].isspace():
         error(
             filename,
             linenum,
@@ -5509,7 +5545,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state, er
     #
     # Doxygen documentation copying can get pretty long when using an overloaded
     # function declaration
-    if (
+    if (not _IsFiltered('whitespace/line_length') and 
         not line.startswith("#include")
         and not is_header_guard
         and not re.match(r"^\s*//.*http(s?)://\S*$", line)
@@ -5527,7 +5563,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state, er
                 f"Lines should be <= {_line_length} characters long",
             )
 
-    if (
+    if (not _IsFiltered('whitespace/newline') and 
         cleansed_line.count(";") > 1
         and
         # allow simple single line lambdas
@@ -5701,6 +5737,7 @@ def CheckIncludeLine(filename, clean_lines, linenum, include_state, error):
       include_state: An _IncludeState instance in which the headers are inserted.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('build/include_subdir') and _IsFiltered('build/include') and _IsFiltered('build/include_order') and _IsFiltered('build/include_alpha'): return
     fileinfo = FileInfo(filename)
     line = clean_lines.lines[linenum]
 
@@ -5948,21 +5985,22 @@ def CheckLanguage(
 
     # Check if people are using the verboten C basic types.  The only exception
     # we regularly allow is "unsigned short port" for port.
-    if re.search(r"\bshort port\b", line):
-        if not re.search(r"\bunsigned short port\b", line):
-            error(
-                filename, linenum, "runtime/int", 4, 'Use "unsigned short" for ports, not "short"'
-            )
-    else:
-        match = re.search(r"\b(short|long(?! +double)|long long)\b", line)
-        if match:
-            error(
-                filename,
-                linenum,
-                "runtime/int",
-                4,
-                f"Use int16_t/int64_t/etc, rather than the C type {match.group(1)}",
-            )
+    if not _IsFiltered('runtime/int'):
+        if re.search(r"\bshort port\b", line):
+            if not re.search(r"\bunsigned short port\b", line):
+                error(
+                    filename, linenum, "runtime/int", 4, 'Use "unsigned short" for ports, not "short"'
+                )
+        else:
+            match = re.search(r"\b(short|long(?! +double)|long long)\b", line)
+            if match:
+                error(
+                    filename,
+                    linenum,
+                    "runtime/int",
+                    4,
+                    f"Use int16_t/int64_t/etc, rather than the C type {match.group(1)}",
+                )
 
     # Check if some verboten operator overloading is going on
     # TODO(google): catch out-of-line unary operator&:
@@ -5970,7 +6008,7 @@ def CheckLanguage(
     #   int operator&(const X& x) { return 42; }  // unary operator&
     # The trick is it's hard to tell apart from binary operator&:
     #   class Y { int operator&(const Y& x) { return 23; } }; // binary operator&
-    if re.search(r"\boperator\s*&\s*\(\s*\)", line):
+    if not _IsFiltered('runtime/operator') and re.search(r"\boperator\s*&\s*\(\s*\)", line):
         error(
             filename,
             linenum,
@@ -5981,7 +6019,7 @@ def CheckLanguage(
 
     # Check for suspicious usage of "if" like
     # } if (a == b) {
-    if re.search(r"\}\s*if\s*\(", line):
+    if not _IsFiltered('readability/braces') and re.search(r"\}\s*if\s*\(", line):
         error(
             filename,
             linenum,
@@ -5997,30 +6035,32 @@ def CheckLanguage(
     # convention of the whole function to process multiple line to handle it.
     #   printf(
     #       boy_this_is_a_really_long_variable_that_cannot_fit_on_the_prev_line);
-    if printf_args := _GetTextInside(line, r"(?i)\b(string)?printf\s*\("):
-        match = re.match(r"([\w.\->()]+)$", printf_args)
-        if match and match.group(1) != "__VA_ARGS__":
-            function_name = re.search(r"\b((?:string)?printf)\s*\(", line, re.IGNORECASE).group(1)
+    if not _IsFiltered('runtime/printf'):
+        if printf_args := _GetTextInside(line, r"(?i)\b(string)?printf\s*\("):
+            match = re.match(r"([\w.\->()]+)$", printf_args)
+            if match and match.group(1) != "__VA_ARGS__":
+                function_name = re.search(r"\b((?:string)?printf)\s*\(", line, re.IGNORECASE).group(1)
+                error(
+                    filename,
+                    linenum,
+                    "runtime/printf",
+                    4,
+                    f'Potential format string bug. Do {function_name}("%s", {match.group(1)}) instead.',
+                )
+
+    if not _IsFiltered('runtime/memset'):
+        # Check for potential memset bugs like memset(buf, sizeof(buf), 0).
+        match = re.search(r"memset\s*\(([^,]*),\s*([^,]*),\s*0\s*\)", line)
+        if match and not re.match(r"^''|-?[0-9]+|0x[0-9A-Fa-f]$", match.group(2)):
             error(
                 filename,
                 linenum,
-                "runtime/printf",
+                "runtime/memset",
                 4,
-                f'Potential format string bug. Do {function_name}("%s", {match.group(1)}) instead.',
+                f'Did you mean "memset({match.group(1)}, 0, {match.group(2)})"?',
             )
 
-    # Check for potential memset bugs like memset(buf, sizeof(buf), 0).
-    match = re.search(r"memset\s*\(([^,]*),\s*([^,]*),\s*0\s*\)", line)
-    if match and not re.match(r"^''|-?[0-9]+|0x[0-9A-Fa-f]$", match.group(2)):
-        error(
-            filename,
-            linenum,
-            "runtime/memset",
-            4,
-            f'Did you mean "memset({match.group(1)}, 0, {match.group(2)})"?',
-        )
-
-    if re.search(r"\busing namespace\b", line):
+    if not _IsFiltered('build/namespaces_literals') and not _IsFiltered('build/namespaces') and re.search(r"\busing namespace\b", line):
         if re.search(r"\bliterals\b", line):
             error(
                 filename,
@@ -6037,68 +6077,69 @@ def CheckLanguage(
                 5,
                 "Do not use namespace using-directives.  Use using-declarations instead.",
             )
-
-    # Detect variable-length arrays.
-    match = re.match(r"\s*(.+::)?(\w+) [a-z]\w*\[(.+)];", line)
-    if (
-        match
-        and match.group(2) != "return"
-        and match.group(2) != "delete"
-        and match.group(3).find("]") == -1
-    ):
-        # Split the size using space and arithmetic operators as delimiters.
-        # If any of the resulting tokens are not compile time constants then
-        # report the error.
-        tokens = re.split(r"\s|\+|\-|\*|\/|<<|>>]", match.group(3))
-        is_const = True
-        skip_next = False
-        for tok in tokens:
-            if skip_next:
-                skip_next = False
-                continue
-
-            if re.search(r"sizeof\(.+\)", tok):
-                continue
-            if re.search(r"arraysize\(\w+\)", tok):
-                continue
-
-            tok = tok.lstrip("(")
-            tok = tok.rstrip(")")
-            if not tok:
-                continue
-            if re.match(r"\d+", tok):
-                continue
-            if re.match(r"0[xX][0-9a-fA-F]+", tok):
-                continue
-            if re.match(r"k[A-Z0-9]\w*", tok):
-                continue
-            if re.match(r"(.+::)?k[A-Z0-9]\w*", tok):
-                continue
-            if re.match(r"(.+::)?[A-Z][A-Z0-9_]*", tok):
-                continue
-            # A catch all for tricky sizeof cases, including 'sizeof expression',
-            # 'sizeof(*type)', 'sizeof(const type)', 'sizeof(struct StructName)'
-            # requires skipping the next token because we split on ' ' and '*'.
-            if tok.startswith("sizeof"):
-                skip_next = True
-                continue
-            is_const = False
-            break
-        if not is_const:
-            error(
-                filename,
-                linenum,
-                "runtime/arrays",
-                1,
-                "Do not use variable-length arrays.  Use an appropriately named "
-                "('k' followed by CamelCase) compile-time constant for the size.",
-            )
+            
+    if not _IsFiltered('runtime/arrays'):
+        # Detect variable-length arrays.
+        match = re.match(r"\s*(.+::)?(\w+) [a-z]\w*\[(.+)];", line)
+        if (
+            match
+            and match.group(2) != "return"
+            and match.group(2) != "delete"
+            and match.group(3).find("]") == -1
+        ):
+            # Split the size using space and arithmetic operators as delimiters.
+            # If any of the resulting tokens are not compile time constants then
+            # report the error.
+            tokens = re.split(r"\s|\+|\-|\*|\/|<<|>>]", match.group(3))
+            is_const = True
+            skip_next = False
+            for tok in tokens:
+                if skip_next:
+                    skip_next = False
+                    continue
+        
+                if re.search(r"sizeof\(.+\)", tok):
+                    continue
+                if re.search(r"arraysize\(\w+\)", tok):
+                    continue
+        
+                tok = tok.lstrip("(")
+                tok = tok.rstrip(")")
+                if not tok:
+                    continue
+                if re.match(r"\d+", tok):
+                    continue
+                if re.match(r"0[xX][0-9a-fA-F]+", tok):
+                    continue
+                if re.match(r"k[A-Z0-9]\w*", tok):
+                    continue
+                if re.match(r"(.+::)?k[A-Z0-9]\w*", tok):
+                    continue
+                if re.match(r"(.+::)?[A-Z][A-Z0-9_]*", tok):
+                    continue
+                # A catch all for tricky sizeof cases, including 'sizeof expression',
+                # 'sizeof(*type)', 'sizeof(const type)', 'sizeof(struct StructName)'
+                # requires skipping the next token because we split on ' ' and '*'.
+                if tok.startswith("sizeof"):
+                    skip_next = True
+                    continue
+                is_const = False
+                break
+            if not is_const:
+                error(
+                    filename,
+                    linenum,
+                    "runtime/arrays",
+                    1,
+                    "Do not use variable-length arrays.  Use an appropriately named "
+                    "('k' followed by CamelCase) compile-time constant for the size.",
+                )
 
     # Check for use of unnamed namespaces in header files.  Registration
     # macros are typically OK, so we allow use of "namespace {" on lines
     # that end with backslashes.
-    if (
-        IsHeaderExtension(file_extension)
+    if (not _IsFiltered('build/namespaces_headers')
+        and IsHeaderExtension(file_extension)
         and re.search(r"\bnamespace\s*{", line)
         and line[-1] != "\\"
     ):
@@ -6122,6 +6163,7 @@ def CheckGlobalStatic(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/string') and _IsFiltered('runtime/init'): return
     line = clean_lines.elided[linenum]
 
     # Match two lines at a time to support multiline declarations
@@ -6201,6 +6243,7 @@ def CheckPrintf(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/printf'): return	
     line = clean_lines.elided[linenum]
 
     # When snprintf is used, the second argument shouldn't be a literal.
@@ -6323,6 +6366,7 @@ def CheckForNonConstReference(filename, clean_lines, linenum, nesting_state, err
                      the current stack of nested blocks being parsed.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('runtime/references'): return
     # Do nothing if there is no '&' on current line.
     line = clean_lines.elided[linenum]
     if "&" not in line:
@@ -6463,6 +6507,7 @@ def CheckCasts(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/casting') and _IsFiltered('runtime/casting'): return
     line = clean_lines.elided[linenum]
 
     # Check to see if they're using an conversion function cast.
@@ -6978,6 +7023,7 @@ def CheckForIncludeWhatYouUse(filename, clean_lines, include_state, error, io=co
       io: The IO factory to use to read the header file. Provided for unittest
           injection.
     """
+    if _IsFiltered('build/include_what_you_use'): return
     required = {}  # A map of header name to linenumber and the template entity.
     # Example of required: { '<functional>': (1219, 'less<>') }
 
@@ -7049,6 +7095,7 @@ def CheckMakePairUsesDeduction(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('build/explicit_make_pair'): return
     line = clean_lines.elided[linenum]
     match = _RE_PATTERN_EXPLICIT_MAKEPAIR.search(line)
     if match:
@@ -7071,6 +7118,7 @@ def CheckRedundantVirtual(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/inheritance'): return
     # Look for "virtual" on current line.
     line = clean_lines.elided[linenum]
     virtual = re.match(r"^(.*)(\bvirtual\b)(.*)$", line)
@@ -7146,6 +7194,7 @@ def CheckRedundantOverrideOrFinal(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('readability/inheritance'): return
     # Look for closing parenthesis nearby.  We need one to confirm where
     # the declarator ends and where the virt-specifier starts to avoid
     # false positives.
@@ -7300,7 +7349,8 @@ def ProcessLine(
     raw_lines = clean_lines.raw_lines
     ParseNolintSuppressions(filename, raw_lines[line], line, error)
     nesting_state.Update(filename, clean_lines, line, error)
-    CheckForNamespaceIndentation(filename, nesting_state, clean_lines, line, error)
+    if not _IsFiltered('whitespace/indent_namespace'):
+        CheckForNamespaceIndentation(filename, nesting_state, clean_lines, line, error)
     if nesting_state.InAsmBlock():
         return
     CheckForFunctionLengths(filename, clean_lines, line, function_state, error)
@@ -7329,6 +7379,7 @@ def FlagCxxHeaders(filename, clean_lines, linenum, error):
       linenum: The number of the line to check.
       error: The function to call with any errors found.
     """
+    if _IsFiltered('build/c++11') and _IsFiltered('build/c++17'): return
     line = clean_lines.elided[linenum]
 
     include = re.match(r'\s*#\s*include\s+[<"]([^<"]+)[">]', line)
@@ -7402,7 +7453,7 @@ def ProcessFileData(filename, file_extension, lines, error, extra_check_function
             cppvar,
         )
         FlagCxxHeaders(filename, clean_lines, line, error)
-    if _error_suppressions.HasOpenBlock():
+    if not _IsFiltered('readability/nolint') and _error_suppressions.HasOpenBlock():
         error(
             filename,
             _error_suppressions.GetOpenBlockStart(),
@@ -7537,6 +7588,8 @@ def ProcessFile(filename, vlevel, extra_check_functions=None):
         _RestoreFilters()
         return
 
+    CacheFilters()
+
     lf_lines = []
     crlf_lines = []
     try:
@@ -7590,7 +7643,7 @@ def ProcessFile(filename, vlevel, extra_check_functions=None):
         # We can't depend on os.linesep to determine what the desired
         # end-of-line sequence should be, since that will return the
         # server-side end-of-line sequence.
-        if lf_lines and crlf_lines:
+        if not _IsFiltered('whitespace/newline') and lf_lines and crlf_lines:
             # Warn on every line with CR.  An alternative approach might be to
             # check whether the file is mostly CRLF or just LF, and warn on the
             # minority, we bias toward LF here since most tools prefer LF.
@@ -7605,8 +7658,8 @@ def ProcessFile(filename, vlevel, extra_check_functions=None):
 
     # Suppress printing anything if --quiet was passed unless the error
     # count has increased after processing this file.
-    if not _cpplint_state.quiet or old_errors != _cpplint_state.error_count:
-        _cpplint_state.PrintInfo(f"Done processing {filename}\n")
+    #if not _cpplint_state.quiet or old_errors != _cpplint_state.error_count:
+    #    _cpplint_state.PrintInfo(f"Done processing {filename}\n")
     _RestoreFilters()
 
 
@@ -7868,8 +7921,8 @@ def main():
         for filename in filenames:
             ProcessFile(filename, _cpplint_state.verbose_level)
         # If --quiet is passed, suppress printing error count unless there are errors.
-        if not _cpplint_state.quiet or _cpplint_state.error_count > 0:
-            _cpplint_state.PrintErrorCounts()
+        #if not _cpplint_state.quiet or _cpplint_state.error_count > 0:
+        #    _cpplint_state.PrintErrorCounts()
 
         if _cpplint_state.output_format == "junit":
             sys.stderr.write(_cpplint_state.FormatJUnitXML())
